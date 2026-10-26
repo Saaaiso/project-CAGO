@@ -1,0 +1,65 @@
+name: CI
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - name: Restore
+        if: ${{ hashFiles('backend/**/*.sln', 'backend/**/*.csproj') != '' }}
+        run: dotnet restore
+        working-directory: backend
+      - name: Build
+        if: ${{ hashFiles('backend/**/*.sln', 'backend/**/*.csproj') != '' }}
+        run: dotnet build --no-restore -c Release
+        working-directory: backend
+      - name: Test
+        if: ${{ hashFiles('backend/**/*.sln', 'backend/**/*.csproj') != '' }}
+        run: dotnet test --no-build -c Release
+        working-directory: backend
+
+  workers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        if: ${{ hashFiles('workers/requirements.txt') != '' }}
+        run: pip install -r requirements.txt ruff pytest
+        working-directory: workers
+      - name: Lint
+        if: ${{ hashFiles('workers/requirements.txt') != '' }}
+        run: ruff check .
+        working-directory: workers
+      - name: Test
+        if: ${{ hashFiles('workers/requirements.txt') != '' }}
+        run: pytest || [ $? -eq 5 ]
+        working-directory: workers
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install
+        if: ${{ hashFiles('frontend/package-lock.json') != '' }}
+        run: npm ci
+        working-directory: frontend
+      - name: Build
+        if: ${{ hashFiles('frontend/package-lock.json') != '' }}
+        run: npm run build --if-present
+        working-directory: frontend
+      - name: Test
+        if: ${{ hashFiles('frontend/package-lock.json') != '' }}
+        run: npm test --if-present
+        working-directory: frontend
