@@ -1,25 +1,46 @@
 openapi: 3.0.3
 info:
   title: CAGO API
-  version: 0.1.0
+  version: 0.2.0
   description: |
-    API платформы точечного земледелия и анализа пастбищных данных (CAGO).
+    API платформы точечного земледелия и мониторинга пастбищ (CAGO).
 
-    **Основной сценарий (MVP):** пользователь создаёт поле (GeoJSON-полигон) -> запускает анализ
+    Платформа обслуживает две группы пользователей:
+
+    | Роль | Кто это | Что делает в MVP |
+    |---|---|---|
+    | `Farmer` | Фермер | Ведёт свои поля, запускает погодный анализ, смотрит историю и скачивает отчёты. Видит пастбища своей территории (только чтение) |
+    | `Official` | Сотрудник айыл окмоту | Ведёт пастбища своей территории, запускает их анализ, смотрит дашборд территории. Видит поля фермеров территории (только чтение) |
+
+    Аккаунты `Official` не создаются через регистрацию: их заводит администратор (seed-скрипт / миграция).
+    `Farmer` регистрируется сам и выбирает свою территорию (айыл аймак).
+
+    **Основной сценарий (MVP):** пользователь создаёт объект (поле или пастбище, GeoJSON-полигон) -> запускает анализ
     за период -> backend ставит задачу в Redis и сразу отвечает `202` -> воркер забирает погоду
-    из Open-Meteo, считает показатели и пишет результат в PostgreSQL -> фронт опрашивает
-    `GET /analyses/{analysisId}` до статуса `Done` или `Failed`.
+    из Open-Meteo, считает показатели (осадки, GDD, индекс засухи) и пишет результат в PostgreSQL ->
+    фронт опрашивает `GET /analyses/{analysisId}` до статуса `Done` или `Failed`.
+    Для пастбищ последний результат анализа попадает в дашборд айыл окмоту.
 
     **Ожидаемое время отклика (p95, при нагрузке до 25 RPS):**
 
     | Эндпоинт | p95 |
     |---|---|
     | `POST /auth/login`, `POST /auth/register` | < 500 мс (хеширование пароля) |
-    | `GET /fields`, `GET /fields/{id}` | < 200 мс |
-    | `POST /fields`, `PUT /fields/{id}` | < 300 мс |
-    | `POST /fields/{id}/analyses` (только постановка в очередь) | < 300 мс |
+    | `GET /fields`, `GET /pastures`, `GET /*/{id}` | < 200 мс |
+    | `POST/PUT` для полей и пастбищ | < 300 мс |
+    | `POST /{fields,pastures}/{id}/analyses` (только постановка в очередь) | < 300 мс |
     | `GET /analyses/{id}` | < 150 мс |
+    | `GET /dashboard/territory` (агрегаты, кэш в Redis 60 с) | < 500 мс |
     | Выполнение анализа воркером (асинхронно) | < 30 с |
+
+    **Вне MVP (планы развития, в API не реализовано):**
+    - спутниковые данные и индексы растительности (NDVI), растры в MinIO;
+    - расчёт нагрузки на пастбище (поголовье, сезонная ротация, отгонное животноводство);
+    - уведомления (Telegram/e-mail) о засухе и критическом состоянии пастбищ;
+    - уровни выше территории: район, область, республика;
+    - сравнение сезонов и прогноз состояния пастбищ;
+    - сводные отчёты для айыл окмоту (PDF/Excel) по всей территории;
+    - мобильное приложение и офлайн-режим для работы в горах.
 
     Формат ошибок: [RFC 7807 Problem Details](https://datatracker.ietf.org/doc/html/rfc7807).
   contact:
@@ -32,12 +53,18 @@ tags:
     description: Служебные эндпоинты
   - name: Auth
     description: Регистрация и авторизация
+  - name: Territories
+    description: Территории (айыл аймаки)
   - name: Fields
-    description: Поля пользователя
+    description: Поля фермеров
+  - name: Pastures
+    description: Пастбища территории
   - name: Analyses
-    description: Асинхронные анализы погодных данных по полю
+    description: Асинхронные анализы погодных данных по полю или пастбищу
   - name: Reports
     description: Экспорт результатов анализа (файлы в MinIO)
+  - name: Dashboard
+    description: Сводка по территории для айыл окмоту
 
 security:
   - bearerAuth: []
@@ -66,7 +93,8 @@ paths:
   /auth/register:
     post:
       tags: [Auth]
-      summary: Регистрация пользователя
+      summary: Регистрация фермера
+      description: Всегда создаёт пользователя с ролью `Farmer`. Сотрудников айыл окмоту создаёт администратор.
       security: []
       requestBody:
         required: true
@@ -93,7 +121,7 @@ paths:
   /auth/login:
     post:
       tags: [Auth]
-      summary: Вход
+      summary: Вход (фермер или сотрудник айыл окмоту)
       security: []
       requestBody:
         required: true
@@ -114,7 +142,7 @@ paths:
   /auth/me:
     get:
       tags: [Auth]
-      summary: Текущий пользователь
+      summary: Текущий пользователь (с ролью и территорией)
       responses:
         '200':
           description: Профиль
@@ -125,10 +153,28 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
+  /territories:
+    get:
+      tags: [Territories]
+      summary: Список территорий (айыл аймаков)
+      description: Публичный справочник, нужен для выбора территории при регистрации.
+      security: []
+      responses:
+        '200':
+          description: Территории
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Territory'
+
   /fields:
     get:
       tags: [Fields]
-      summary: Список полей текущего пользователя
+      summary: Список полей
+      description: |
+        `Farmer` получает свои поля. `Official` получает поля всех фермеров своей территории (только чтение).
       parameters:
         - $ref: '#/components/parameters/Page'
         - $ref: '#/components/parameters/PageSize'
@@ -143,14 +189,14 @@ paths:
           $ref: '#/components/responses/Unauthorized'
     post:
       tags: [Fields]
-      summary: Создать поле
-      description: Геометрия валидируется (замкнутый полигон, координаты в WGS84). Центроид считается на сервере.
+      summary: Создать поле (только Farmer)
+      description: Геометрия валидируется (замкнутый полигон, координаты в WGS84). Центроид и площадь считаются на сервере. Территория берётся из профиля фермера.
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/FieldCreate'
+              $ref: '#/components/schemas/ObjectCreate'
       responses:
         '201':
           description: Поле создано
@@ -166,6 +212,8 @@ paths:
           $ref: '#/components/responses/ValidationError'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
 
   /fields/{fieldId}:
     parameters:
@@ -173,6 +221,7 @@ paths:
     get:
       tags: [Fields]
       summary: Получить поле
+      description: Доступно владельцу и сотрудникам айыл окмоту той же территории.
       responses:
         '200':
           description: Поле
@@ -186,13 +235,13 @@ paths:
           $ref: '#/components/responses/NotFound'
     put:
       tags: [Fields]
-      summary: Обновить поле
+      summary: Обновить поле (только владелец)
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/FieldCreate'
+              $ref: '#/components/schemas/ObjectCreate'
       responses:
         '200':
           description: Обновлённое поле
@@ -204,16 +253,20 @@ paths:
           $ref: '#/components/responses/ValidationError'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
     delete:
       tags: [Fields]
-      summary: Удалить поле вместе с его анализами
+      summary: Удалить поле вместе с его анализами (только владелец)
       responses:
         '204':
           description: Удалено
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
 
@@ -222,16 +275,13 @@ paths:
       - $ref: '#/components/parameters/FieldId'
     post:
       tags: [Analyses]
-      summary: Запустить анализ поля
+      summary: Запустить анализ поля (только владелец)
       description: |
         Создаёт запись со статусом `Pending` и ставит задачу в очередь Redis.
         Ответ приходит сразу, результат нужно получать через `GET /analyses/{analysisId}`.
         Если передан заголовок `Idempotency-Key`, повторный запрос с тем же ключом вернёт уже созданный анализ.
       parameters:
-        - name: Idempotency-Key
-          in: header
-          required: false
-          schema: { type: string, maxLength: 64 }
+        - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content:
@@ -240,30 +290,174 @@ paths:
               $ref: '#/components/schemas/AnalysisCreate'
       responses:
         '202':
-          description: Задача принята
-          headers:
-            Location:
-              schema: { type: string }
-              description: URL для опроса статуса
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Analysis'
+          $ref: '#/components/responses/AnalysisAccepted'
         '400':
           $ref: '#/components/responses/ValidationError'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
         '429':
-          description: Слишком много активных анализов у пользователя
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/Problem'
+          $ref: '#/components/responses/TooManyAnalyses'
     get:
       tags: [Analyses]
       summary: История анализов поля
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/AnalysisStatus'
+      responses:
+        '200':
+          description: Страница анализов (по убыванию даты создания)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnalysisPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /pastures:
+    get:
+      tags: [Pastures]
+      summary: Список пастбищ территории
+      description: |
+        Возвращает пастбища территории текущего пользователя (и для `Farmer`, и для `Official`).
+        В каждом пастбище есть краткий итог последнего завершённого анализа.
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: droughtLevel
+          in: query
+          description: Фильтр по уровню засухи последнего анализа
+          schema:
+            $ref: '#/components/schemas/DroughtLevel'
+      responses:
+        '200':
+          description: Страница пастбищ
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PasturePage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Pastures]
+      summary: Создать пастбище (только Official)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ObjectCreate'
+      responses:
+        '201':
+          description: Пастбище создано
+          headers:
+            Location:
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Pasture'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /pastures/{pastureId}:
+    parameters:
+      - $ref: '#/components/parameters/PastureId'
+    get:
+      tags: [Pastures]
+      summary: Получить пастбище
+      responses:
+        '200':
+          description: Пастбище
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Pasture'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [Pastures]
+      summary: Обновить пастбище (только Official своей территории)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ObjectCreate'
+      responses:
+        '200':
+          description: Обновлённое пастбище
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Pasture'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Pastures]
+      summary: Удалить пастбище вместе с анализами (только Official своей территории)
+      responses:
+        '204':
+          description: Удалено
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /pastures/{pastureId}/analyses:
+    parameters:
+      - $ref: '#/components/parameters/PastureId'
+    post:
+      tags: [Analyses]
+      summary: Запустить анализ пастбища (только Official)
+      description: Работает так же, как анализ поля, результат используется в дашборде территории.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AnalysisCreate'
+      responses:
+        '202':
+          $ref: '#/components/responses/AnalysisAccepted'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyAnalyses'
+    get:
+      tags: [Analyses]
+      summary: История анализов пастбища
       parameters:
         - $ref: '#/components/parameters/Page'
         - $ref: '#/components/parameters/PageSize'
@@ -289,7 +483,9 @@ paths:
     get:
       tags: [Analyses]
       summary: Статус и результат анализа
-      description: Поле `result` заполнено только при статусе `Done`, поле `error` только при `Failed`.
+      description: |
+        Поле `result` заполнено только при статусе `Done`, поле `error` только при `Failed`.
+        Доступно владельцу объекта и сотрудникам айыл окмоту той же территории.
       responses:
         '200':
           description: Анализ
@@ -303,12 +499,14 @@ paths:
           $ref: '#/components/responses/NotFound'
     delete:
       tags: [Analyses]
-      summary: Удалить анализ
+      summary: Удалить анализ (только тот, кто его запускал)
       responses:
         '204':
           description: Удалено
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
 
@@ -369,16 +567,42 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  /dashboard/territory:
+    get:
+      tags: [Dashboard]
+      summary: Дашборд территории (только Official)
+      description: |
+        Сводка по территории сотрудника: сколько фермеров, полей и пастбищ, как распределяются пастбища
+        по уровню засухи (по последнему завершённому анализу) и какие пастбища в зоне риска.
+        Агрегаты кэшируются в Redis на 60 секунд.
+      responses:
+        '200':
+          description: Сводка
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TerritoryDashboard'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
 components:
   securitySchemes:
     bearerAuth:
       type: http
       scheme: bearer
       bearerFormat: JWT
+      description: JWT содержит `sub` (id пользователя), `role` (`Farmer` или `Official`) и `territoryId`.
 
   parameters:
     FieldId:
       name: fieldId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    PastureId:
+      name: pastureId
       in: path
       required: true
       schema: { type: string, format: uuid }
@@ -395,6 +619,11 @@ components:
       name: pageSize
       in: query
       schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema: { type: string, maxLength: 64 }
 
   responses:
     Unauthorized:
@@ -403,8 +632,14 @@ components:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/Problem'
+    Forbidden:
+      description: Роль или права пользователя не позволяют выполнить действие
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
     NotFound:
-      description: Ресурс не найден или принадлежит другому пользователю
+      description: Ресурс не найден или недоступен пользователю
       content:
         application/problem+json:
           schema:
@@ -415,6 +650,22 @@ components:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/ValidationProblem'
+    TooManyAnalyses:
+      description: Слишком много активных анализов у пользователя
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    AnalysisAccepted:
+      description: Задача принята
+      headers:
+        Location:
+          schema: { type: string }
+          description: URL для опроса статуса
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Analysis'
 
   schemas:
     Problem:
@@ -439,13 +690,25 @@ components:
               example:
                 geometry: ['Полигон должен быть замкнутым']
 
+    Role:
+      type: string
+      enum: [Farmer, Official]
+
+    Territory:
+      type: object
+      required: [id, name]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string, example: Ак-Суу айыл аймагы }
+
     RegisterRequest:
       type: object
-      required: [email, password, name]
+      required: [email, password, name, territoryId]
       properties:
         email: { type: string, format: email }
         password: { type: string, minLength: 8, maxLength: 128, format: password }
         name: { type: string, minLength: 1, maxLength: 100 }
+        territoryId: { type: string, format: uuid }
 
     LoginRequest:
       type: object
@@ -465,11 +728,14 @@ components:
 
     User:
       type: object
-      required: [id, email, name]
+      required: [id, email, name, role, territoryId]
       properties:
         id: { type: string, format: uuid }
         email: { type: string, format: email }
         name: { type: string }
+        role:
+          $ref: '#/components/schemas/Role'
+        territoryId: { type: string, format: uuid }
         createdAt: { type: string, format: date-time }
 
     Polygon:
@@ -491,36 +757,43 @@ components:
       example:
         type: Polygon
         coordinates:
-          - [[37.60, 55.70], [37.61, 55.70], [37.61, 55.71], [37.60, 55.71], [37.60, 55.70]]
+          - [[74.60, 42.87], [74.61, 42.87], [74.61, 42.88], [74.60, 42.88], [74.60, 42.87]]
 
-    FieldCreate:
+    Point:
       type: object
+      required: [lat, lon]
+      properties:
+        lat: { type: number, format: double }
+        lon: { type: number, format: double }
+
+    ObjectCreate:
+      type: object
+      description: Тело создания и обновления для поля и пастбища.
       required: [name, geometry]
       properties:
         name: { type: string, minLength: 1, maxLength: 100, example: Северный участок }
-        cropType:
+        description:
           type: string
           nullable: true
-          description: Культура или тип пастбища
+          description: Культура (для поля) или тип пастбища (для пастбища)
           example: пшеница
         geometry:
           $ref: '#/components/schemas/Polygon'
 
     Field:
       type: object
-      required: [id, name, geometry, centroid, areaHa, createdAt]
+      required: [id, ownerId, territoryId, name, geometry, centroid, areaHa, createdAt]
       properties:
         id: { type: string, format: uuid }
+        ownerId: { type: string, format: uuid }
+        ownerName: { type: string }
+        territoryId: { type: string, format: uuid }
         name: { type: string }
-        cropType: { type: string, nullable: true }
+        description: { type: string, nullable: true }
         geometry:
           $ref: '#/components/schemas/Polygon'
         centroid:
-          type: object
-          required: [lat, lon]
-          properties:
-            lat: { type: number, format: double }
-            lon: { type: number, format: double }
+          $ref: '#/components/schemas/Point'
         areaHa: { type: number, format: double, description: Площадь в гектарах }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
@@ -537,9 +810,59 @@ components:
         pageSize: { type: integer }
         total: { type: integer }
 
+    LastAnalysisSummary:
+      type: object
+      nullable: true
+      description: Краткий итог последнего завершённого анализа. `null`, если анализа ещё не было.
+      required: [analysisId, finishedAt, droughtIndex, droughtLevel]
+      properties:
+        analysisId: { type: string, format: uuid }
+        finishedAt: { type: string, format: date-time }
+        droughtIndex: { type: number, example: 0.42 }
+        droughtLevel:
+          $ref: '#/components/schemas/DroughtLevel'
+
+    Pasture:
+      type: object
+      required: [id, territoryId, name, geometry, centroid, areaHa, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        territoryId: { type: string, format: uuid }
+        name: { type: string, example: Жайлоо Кара-Суу }
+        description: { type: string, nullable: true }
+        geometry:
+          $ref: '#/components/schemas/Polygon'
+        centroid:
+          $ref: '#/components/schemas/Point'
+        areaHa: { type: number, format: double }
+        lastAnalysis:
+          $ref: '#/components/schemas/LastAnalysisSummary'
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    PasturePage:
+      type: object
+      required: [items, page, pageSize, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Pasture'
+        page: { type: integer }
+        pageSize: { type: integer }
+        total: { type: integer }
+
+    DroughtLevel:
+      type: string
+      enum: [None, Moderate, Severe]
+
     AnalysisStatus:
       type: string
       enum: [Pending, Running, Done, Failed]
+
+    TargetType:
+      type: string
+      enum: [Field, Pasture]
 
     AnalysisCreate:
       type: object
@@ -579,8 +902,7 @@ components:
             (например, доля дней без осадков и дефицит осадков относительно нормы).
           example: 0.42
         droughtLevel:
-          type: string
-          enum: [None, Moderate, Severe]
+          $ref: '#/components/schemas/DroughtLevel'
         daily:
           type: array
           items:
@@ -588,10 +910,15 @@ components:
 
     Analysis:
       type: object
-      required: [id, fieldId, status, periodStart, periodEnd, createdAt]
+      required: [id, targetType, targetId, status, periodStart, periodEnd, createdAt]
       properties:
         id: { type: string, format: uuid }
-        fieldId: { type: string, format: uuid }
+        targetType:
+          $ref: '#/components/schemas/TargetType'
+        targetId:
+          type: string
+          format: uuid
+          description: Идентификатор поля или пастбища (зависит от `targetType`)
         status:
           $ref: '#/components/schemas/AnalysisStatus'
         periodStart: { type: string, format: date }
@@ -640,3 +967,38 @@ components:
           format: uri
           nullable: true
         createdAt: { type: string, format: date-time }
+
+    TerritoryDashboard:
+      type: object
+      required: [territory, generatedAt, farmersCount, fields, pastures, pastureCondition, topRiskPastures]
+      properties:
+        territory:
+          $ref: '#/components/schemas/Territory'
+        generatedAt: { type: string, format: date-time }
+        farmersCount: { type: integer, example: 37 }
+        fields:
+          $ref: '#/components/schemas/ObjectsSummary'
+        pastures:
+          $ref: '#/components/schemas/ObjectsSummary'
+        pastureCondition:
+          type: object
+          description: Сколько пастбищ в каждом состоянии по последнему анализу
+          required: [none, moderate, severe, notAnalyzed]
+          properties:
+            none: { type: integer, example: 12 }
+            moderate: { type: integer, example: 5 }
+            severe: { type: integer, example: 2 }
+            notAnalyzed: { type: integer, example: 3 }
+        topRiskPastures:
+          type: array
+          maxItems: 10
+          description: Пастбища с наибольшим индексом засухи (по убыванию)
+          items:
+            $ref: '#/components/schemas/Pasture'
+
+    ObjectsSummary:
+      type: object
+      required: [count, totalAreaHa]
+      properties:
+        count: { type: integer }
+        totalAreaHa: { type: number, format: double }
