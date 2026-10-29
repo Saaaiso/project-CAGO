@@ -1,0 +1,642 @@
+openapi: 3.0.3
+info:
+  title: CAGO API
+  version: 0.1.0
+  description: |
+    API платформы точечного земледелия и анализа пастбищных данных (CAGO).
+
+    **Основной сценарий (MVP):** пользователь создаёт поле (GeoJSON-полигон) -> запускает анализ
+    за период -> backend ставит задачу в Redis и сразу отвечает `202` -> воркер забирает погоду
+    из Open-Meteo, считает показатели и пишет результат в PostgreSQL -> фронт опрашивает
+    `GET /analyses/{analysisId}` до статуса `Done` или `Failed`.
+
+    **Ожидаемое время отклика (p95, при нагрузке до 25 RPS):**
+
+    | Эндпоинт | p95 |
+    |---|---|
+    | `POST /auth/login`, `POST /auth/register` | < 500 мс (хеширование пароля) |
+    | `GET /fields`, `GET /fields/{id}` | < 200 мс |
+    | `POST /fields`, `PUT /fields/{id}` | < 300 мс |
+    | `POST /fields/{id}/analyses` (только постановка в очередь) | < 300 мс |
+    | `GET /analyses/{id}` | < 150 мс |
+    | Выполнение анализа воркером (асинхронно) | < 30 с |
+
+    Формат ошибок: [RFC 7807 Problem Details](https://datatracker.ietf.org/doc/html/rfc7807).
+  contact:
+    name: Команда CAGO
+servers:
+  - url: http://localhost:8080/api/v1
+    description: Локальный запуск через docker compose
+tags:
+  - name: System
+    description: Служебные эндпоинты
+  - name: Auth
+    description: Регистрация и авторизация
+  - name: Fields
+    description: Поля пользователя
+  - name: Analyses
+    description: Асинхронные анализы погодных данных по полю
+  - name: Reports
+    description: Экспорт результатов анализа (файлы в MinIO)
+
+security:
+  - bearerAuth: []
+
+paths:
+  /health:
+    get:
+      tags: [System]
+      summary: Проверка работоспособности
+      description: Используется для `healthcheck` в docker compose. Проверяет PostgreSQL и Redis.
+      security: []
+      responses:
+        '200':
+          description: Сервис работает
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: Healthy }
+                  postgres: { type: string, example: Healthy }
+                  redis: { type: string, example: Healthy }
+        '503':
+          description: Одна из зависимостей недоступна
+
+  /auth/register:
+    post:
+      tags: [Auth]
+      summary: Регистрация пользователя
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: Пользователь создан
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '409':
+          description: Email уже занят
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Вход
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Успешный вход
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/me:
+    get:
+      tags: [Auth]
+      summary: Текущий пользователь
+      responses:
+        '200':
+          description: Профиль
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /fields:
+    get:
+      tags: [Fields]
+      summary: Список полей текущего пользователя
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Страница полей
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FieldPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Fields]
+      summary: Создать поле
+      description: Геометрия валидируется (замкнутый полигон, координаты в WGS84). Центроид считается на сервере.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FieldCreate'
+      responses:
+        '201':
+          description: Поле создано
+          headers:
+            Location:
+              schema: { type: string }
+              description: URL созданного поля
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Field'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /fields/{fieldId}:
+    parameters:
+      - $ref: '#/components/parameters/FieldId'
+    get:
+      tags: [Fields]
+      summary: Получить поле
+      responses:
+        '200':
+          description: Поле
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Field'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [Fields]
+      summary: Обновить поле
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FieldCreate'
+      responses:
+        '200':
+          description: Обновлённое поле
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Field'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Fields]
+      summary: Удалить поле вместе с его анализами
+      responses:
+        '204':
+          description: Удалено
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /fields/{fieldId}/analyses:
+    parameters:
+      - $ref: '#/components/parameters/FieldId'
+    post:
+      tags: [Analyses]
+      summary: Запустить анализ поля
+      description: |
+        Создаёт запись со статусом `Pending` и ставит задачу в очередь Redis.
+        Ответ приходит сразу, результат нужно получать через `GET /analyses/{analysisId}`.
+        Если передан заголовок `Idempotency-Key`, повторный запрос с тем же ключом вернёт уже созданный анализ.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema: { type: string, maxLength: 64 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AnalysisCreate'
+      responses:
+        '202':
+          description: Задача принята
+          headers:
+            Location:
+              schema: { type: string }
+              description: URL для опроса статуса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Analysis'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          description: Слишком много активных анализов у пользователя
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+    get:
+      tags: [Analyses]
+      summary: История анализов поля
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/AnalysisStatus'
+      responses:
+        '200':
+          description: Страница анализов (по убыванию даты создания)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnalysisPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /analyses/{analysisId}:
+    parameters:
+      - $ref: '#/components/parameters/AnalysisId'
+    get:
+      tags: [Analyses]
+      summary: Статус и результат анализа
+      description: Поле `result` заполнено только при статусе `Done`, поле `error` только при `Failed`.
+      responses:
+        '200':
+          description: Анализ
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Analysis'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Analyses]
+      summary: Удалить анализ
+      responses:
+        '204':
+          description: Удалено
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /analyses/{analysisId}/reports:
+    parameters:
+      - $ref: '#/components/parameters/AnalysisId'
+    post:
+      tags: [Reports]
+      summary: Сформировать отчёт по завершённому анализу
+      description: Допустимо только для анализа в статусе `Done`. Файл формируется воркером и кладётся в MinIO.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [format]
+              properties:
+                format:
+                  $ref: '#/components/schemas/ReportFormat'
+      responses:
+        '202':
+          description: Формирование отчёта запущено
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Report'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Анализ ещё не завершён
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  /reports/{reportId}:
+    parameters:
+      - name: reportId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [Reports]
+      summary: Статус отчёта и ссылка на скачивание
+      description: При статусе `Done` в `downloadUrl` лежит presigned-ссылка MinIO (действует 10 минут).
+      responses:
+        '200':
+          description: Отчёт
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Report'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    FieldId:
+      name: fieldId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    AnalysisId:
+      name: analysisId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    Page:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 1, default: 1 }
+    PageSize:
+      name: pageSize
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+
+  responses:
+    Unauthorized:
+      description: Токен отсутствует или недействителен
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    NotFound:
+      description: Ресурс не найден или принадлежит другому пользователю
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    ValidationError:
+      description: Ошибка валидации входных данных
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ValidationProblem'
+
+  schemas:
+    Problem:
+      type: object
+      properties:
+        type: { type: string, example: 'about:blank' }
+        title: { type: string, example: Not Found }
+        status: { type: integer, example: 404 }
+        detail: { type: string }
+        traceId: { type: string }
+
+    ValidationProblem:
+      allOf:
+        - $ref: '#/components/schemas/Problem'
+        - type: object
+          properties:
+            errors:
+              type: object
+              additionalProperties:
+                type: array
+                items: { type: string }
+              example:
+                geometry: ['Полигон должен быть замкнутым']
+
+    RegisterRequest:
+      type: object
+      required: [email, password, name]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, minLength: 8, maxLength: 128, format: password }
+        name: { type: string, minLength: 1, maxLength: 100 }
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, format: password }
+
+    AuthResponse:
+      type: object
+      required: [accessToken, expiresIn, user]
+      properties:
+        accessToken: { type: string }
+        expiresIn: { type: integer, description: Время жизни токена в секундах, example: 3600 }
+        user:
+          $ref: '#/components/schemas/User'
+
+    User:
+      type: object
+      required: [id, email, name]
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        name: { type: string }
+        createdAt: { type: string, format: date-time }
+
+    Polygon:
+      type: object
+      description: GeoJSON Polygon (WGS84, порядок координат [долгота, широта]). Первое и последнее кольцо замкнуты.
+      required: [type, coordinates]
+      properties:
+        type: { type: string, enum: [Polygon] }
+        coordinates:
+          type: array
+          items:
+            type: array
+            minItems: 4
+            items:
+              type: array
+              minItems: 2
+              maxItems: 2
+              items: { type: number }
+      example:
+        type: Polygon
+        coordinates:
+          - [[37.60, 55.70], [37.61, 55.70], [37.61, 55.71], [37.60, 55.71], [37.60, 55.70]]
+
+    FieldCreate:
+      type: object
+      required: [name, geometry]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100, example: Северный участок }
+        cropType:
+          type: string
+          nullable: true
+          description: Культура или тип пастбища
+          example: пшеница
+        geometry:
+          $ref: '#/components/schemas/Polygon'
+
+    Field:
+      type: object
+      required: [id, name, geometry, centroid, areaHa, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        cropType: { type: string, nullable: true }
+        geometry:
+          $ref: '#/components/schemas/Polygon'
+        centroid:
+          type: object
+          required: [lat, lon]
+          properties:
+            lat: { type: number, format: double }
+            lon: { type: number, format: double }
+        areaHa: { type: number, format: double, description: Площадь в гектарах }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    FieldPage:
+      type: object
+      required: [items, page, pageSize, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Field'
+        page: { type: integer }
+        pageSize: { type: integer }
+        total: { type: integer }
+
+    AnalysisStatus:
+      type: string
+      enum: [Pending, Running, Done, Failed]
+
+    AnalysisCreate:
+      type: object
+      required: [periodStart, periodEnd]
+      properties:
+        periodStart: { type: string, format: date, example: '2026-04-01' }
+        periodEnd:
+          type: string
+          format: date
+          example: '2026-09-30'
+          description: Не раньше `periodStart`, период не длиннее 366 дней
+        gddBaseTemp:
+          type: number
+          default: 10
+          description: Базовая температура для суммы активных температур (GDD), °C
+
+    DailyWeather:
+      type: object
+      required: [date, tMax, tMin, precipitationMm]
+      properties:
+        date: { type: string, format: date }
+        tMax: { type: number, description: °C }
+        tMin: { type: number, description: °C }
+        precipitationMm: { type: number }
+        gdd: { type: number, description: Активные температуры за день }
+
+    AnalysisResult:
+      type: object
+      required: [totalPrecipitationMm, gddSum, droughtIndex, droughtLevel, daily]
+      properties:
+        totalPrecipitationMm: { type: number, example: 312.4 }
+        gddSum: { type: number, example: 1840.5 }
+        droughtIndex:
+          type: number
+          description: |
+            Индекс засухи, 0..1 (чем больше, тем суше). Формула описывается в README
+            (например, доля дней без осадков и дефицит осадков относительно нормы).
+          example: 0.42
+        droughtLevel:
+          type: string
+          enum: [None, Moderate, Severe]
+        daily:
+          type: array
+          items:
+            $ref: '#/components/schemas/DailyWeather'
+
+    Analysis:
+      type: object
+      required: [id, fieldId, status, periodStart, periodEnd, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        fieldId: { type: string, format: uuid }
+        status:
+          $ref: '#/components/schemas/AnalysisStatus'
+        periodStart: { type: string, format: date }
+        periodEnd: { type: string, format: date }
+        gddBaseTemp: { type: number }
+        createdAt: { type: string, format: date-time }
+        startedAt: { type: string, format: date-time, nullable: true }
+        finishedAt: { type: string, format: date-time, nullable: true }
+        result:
+          allOf:
+            - $ref: '#/components/schemas/AnalysisResult'
+          nullable: true
+        error:
+          type: string
+          nullable: true
+          description: Причина ошибки при статусе `Failed`
+
+    AnalysisPage:
+      type: object
+      required: [items, page, pageSize, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Analysis'
+        page: { type: integer }
+        pageSize: { type: integer }
+        total: { type: integer }
+
+    ReportFormat:
+      type: string
+      enum: [csv, pdf]
+
+    Report:
+      type: object
+      required: [id, analysisId, format, status, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        analysisId: { type: string, format: uuid }
+        format:
+          $ref: '#/components/schemas/ReportFormat'
+        status:
+          $ref: '#/components/schemas/AnalysisStatus'
+        downloadUrl:
+          type: string
+          format: uri
+          nullable: true
+        createdAt: { type: string, format: date-time }
