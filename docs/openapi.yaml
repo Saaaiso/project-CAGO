@@ -1,46 +1,39 @@
 openapi: 3.0.3
 info:
   title: CAGO API
-  version: 0.2.0
+  version: 0.3.0
   description: |
     API платформы точечного земледелия и мониторинга пастбищ (CAGO).
 
-    Платформа обслуживает две группы пользователей:
+    **В этой версии реализованы только регистрация, авторизация и заявки на смену роли.**
+    Поля, пастбища, анализы, отчёты и дашборд будут добавлены позже.
 
-    | Роль | Кто это | Что делает в MVP |
-    |---|---|---|
-    | `Farmer` | Фермер | Ведёт свои поля, запускает погодный анализ, смотрит историю и скачивает отчёты. Видит пастбища своей территории (только чтение) |
-    | `Official` | Сотрудник айыл окмоту | Ведёт пастбища своей территории, запускает их анализ, смотрит дашборд территории. Видит поля фермеров территории (только чтение) |
+    ## Роли
 
-    Аккаунты `Official` не создаются через регистрацию: их заводит администратор (seed-скрипт / миграция).
-    `Farmer` регистрируется сам и выбирает свою территорию (айыл аймак).
-
-    **Основной сценарий (MVP):** пользователь создаёт объект (поле или пастбище, GeoJSON-полигон) -> запускает анализ
-    за период -> backend ставит задачу в Redis и сразу отвечает `202` -> воркер забирает погоду
-    из Open-Meteo, считает показатели (осадки, GDD, индекс засухи) и пишет результат в PostgreSQL ->
-    фронт опрашивает `GET /analyses/{analysisId}` до статуса `Done` или `Failed`.
-    Для пастбищ последний результат анализа попадает в дашборд айыл окмоту.
-
-    **Ожидаемое время отклика (p95, при нагрузке до 25 RPS):**
-
-    | Эндпоинт | p95 |
+    | Роль | Как получается |
     |---|---|
-    | `POST /auth/login`, `POST /auth/register` | < 500 мс (хеширование пароля) |
-    | `GET /fields`, `GET /pastures`, `GET /*/{id}` | < 200 мс |
-    | `POST/PUT` для полей и пастбищ | < 300 мс |
-    | `POST /{fields,pastures}/{id}/analyses` (только постановка в очередь) | < 300 мс |
-    | `GET /analyses/{id}` | < 150 мс |
-    | `GET /dashboard/territory` (агрегаты, кэш в Redis 60 с) | < 500 мс |
-    | Выполнение анализа воркером (асинхронно) | < 30 с |
+    | `Farmer` | Назначается автоматически при регистрации |
+    | `Official` | Сотрудник айыл окмоту. Фермер подаёт заявку, администратор её одобряет |
+    | `Admin` | Заводится вручную (seed-скрипт / миграция) |
 
-    **Вне MVP (планы развития, в API не реализовано):**
-    - спутниковые данные и индексы растительности (NDVI), растры в MinIO;
-    - расчёт нагрузки на пастбище (поголовье, сезонная ротация, отгонное животноводство);
-    - уведомления (Telegram/e-mail) о засухе и критическом состоянии пастбищ;
-    - уровни выше территории: район, область, республика;
-    - сравнение сезонов и прогноз состояния пастбищ;
-    - сводные отчёты для айыл окмоту (PDF/Excel) по всей территории;
-    - мобильное приложение и офлайн-режим для работы в горах.
+    ## Хранение ролей
+
+    Таблицы: `users`, `role`, `role_users` (связь многие-ко-многим).
+    У пользователя может быть несколько ролей: после одобрения заявки в `role_users` добавляется
+    запись `Official`, а `Farmer` остаётся.
+
+    Для заявок нужна ещё одна таблица `role_requests`
+    (`id`, `user_id`, `requested_role_id`, `status`, `organization`, `comment`, `reject_reason`,
+    `reviewed_by`, `created_at`, `reviewed_at`).
+
+    ## Сценарий получения роли Official
+
+    1. Пользователь регистрируется через `POST /auth/register`, получает роль `Farmer`.
+    2. Подаёт заявку `POST /role-requests`, статус `Pending`.
+    3. Администратор смотрит `GET /admin/role-requests` и вызывает `approve` или `reject`.
+    4. При `approve` в одной транзакции статус заявки меняется на `Approved` и в `role_users` добавляется `Official`.
+    5. Роли лежат в JWT, поэтому после одобрения пользователю нужно заново войти (`POST /auth/login`).
+       Актуальные роли всегда возвращает `GET /auth/me`.
 
     Формат ошибок: [RFC 7807 Problem Details](https://datatracker.ietf.org/doc/html/rfc7807).
   contact:
@@ -53,18 +46,10 @@ tags:
     description: Служебные эндпоинты
   - name: Auth
     description: Регистрация и авторизация
-  - name: Territories
-    description: Территории (айыл аймаки)
-  - name: Fields
-    description: Поля фермеров
-  - name: Pastures
-    description: Пастбища территории
-  - name: Analyses
-    description: Асинхронные анализы погодных данных по полю или пастбищу
-  - name: Reports
-    description: Экспорт результатов анализа (файлы в MinIO)
-  - name: Dashboard
-    description: Сводка по территории для айыл окмоту
+  - name: RoleRequests
+    description: Заявки пользователя на роль Official
+  - name: Admin
+    description: Рассмотрение заявок (только Admin)
 
 security:
   - bearerAuth: []
@@ -74,7 +59,7 @@ paths:
     get:
       tags: [System]
       summary: Проверка работоспособности
-      description: Используется для `healthcheck` в docker compose. Проверяет PostgreSQL и Redis.
+      description: Используется для `healthcheck` в docker compose. Проверяет PostgreSQL.
       security: []
       responses:
         '200':
@@ -86,15 +71,16 @@ paths:
                 properties:
                   status: { type: string, example: Healthy }
                   postgres: { type: string, example: Healthy }
-                  redis: { type: string, example: Healthy }
         '503':
           description: Одна из зависимостей недоступна
 
   /auth/register:
     post:
       tags: [Auth]
-      summary: Регистрация фермера
-      description: Всегда создаёт пользователя с ролью `Farmer`. Сотрудников айыл окмоту создаёт администратор.
+      summary: Регистрация
+      description: |
+        Создаёт пользователя и добавляет ему роль `Farmer` в `role_users`.
+        Роль `Official` через регистрацию получить нельзя, для неё есть заявка (`POST /role-requests`).
       security: []
       requestBody:
         required: true
@@ -121,7 +107,7 @@ paths:
   /auth/login:
     post:
       tags: [Auth]
-      summary: Вход (фермер или сотрудник айыл окмоту)
+      summary: Вход
       security: []
       requestBody:
         required: true
@@ -131,18 +117,21 @@ paths:
               $ref: '#/components/schemas/LoginRequest'
       responses:
         '200':
-          description: Успешный вход
+          description: Успешный вход. В токен попадают актуальные роли пользователя
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/AuthResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
         '401':
           $ref: '#/components/responses/Unauthorized'
 
   /auth/me:
     get:
       tags: [Auth]
-      summary: Текущий пользователь (с ролью и территорией)
+      summary: Текущий пользователь
+      description: Роли берутся из БД, а не из токена, поэтому после одобрения заявки они обновляются сразу.
       responses:
         '200':
           description: Профиль
@@ -153,439 +142,167 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
-  /territories:
+  /role-requests:
+    post:
+      tags: [RoleRequests]
+      summary: Подать заявку на роль Official
+      description: |
+        Доступно пользователю с ролью `Farmer`, у которого ещё нет роли `Official`.
+        Одновременно может существовать только одна заявка в статусе `Pending`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RoleRequestCreate'
+      responses:
+        '201':
+          description: Заявка создана
+          headers:
+            Location:
+              schema: { type: string }
+              description: URL созданной заявки
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoleRequest'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: Уже есть активная заявка или роль `Official` уже назначена
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
     get:
-      tags: [Territories]
-      summary: Список территорий (айыл аймаков)
-      description: Публичный справочник, нужен для выбора территории при регистрации.
-      security: []
+      tags: [RoleRequests]
+      summary: Мои заявки
+      description: История заявок текущего пользователя, от новых к старым.
       responses:
         '200':
-          description: Территории
+          description: Список заявок
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/Territory'
-
-  /fields:
-    get:
-      tags: [Fields]
-      summary: Список полей
-      description: |
-        `Farmer` получает свои поля. `Official` получает поля всех фермеров своей территории (только чтение).
-      parameters:
-        - $ref: '#/components/parameters/Page'
-        - $ref: '#/components/parameters/PageSize'
-      responses:
-        '200':
-          description: Страница полей
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/FieldPage'
+                  $ref: '#/components/schemas/RoleRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
-    post:
-      tags: [Fields]
-      summary: Создать поле (только Farmer)
-      description: Геометрия валидируется (замкнутый полигон, координаты в WGS84). Центроид и площадь считаются на сервере. Территория берётся из профиля фермера.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ObjectCreate'
-      responses:
-        '201':
-          description: Поле создано
-          headers:
-            Location:
-              schema: { type: string }
-              description: URL созданного поля
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Field'
-        '400':
-          $ref: '#/components/responses/ValidationError'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
 
-  /fields/{fieldId}:
+  /role-requests/{requestId}:
     parameters:
-      - $ref: '#/components/parameters/FieldId'
-    get:
-      tags: [Fields]
-      summary: Получить поле
-      description: Доступно владельцу и сотрудникам айыл окмоту той же территории.
-      responses:
-        '200':
-          description: Поле
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Field'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '404':
-          $ref: '#/components/responses/NotFound'
-    put:
-      tags: [Fields]
-      summary: Обновить поле (только владелец)
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ObjectCreate'
-      responses:
-        '200':
-          description: Обновлённое поле
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Field'
-        '400':
-          $ref: '#/components/responses/ValidationError'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/NotFound'
+      - $ref: '#/components/parameters/RequestId'
     delete:
-      tags: [Fields]
-      summary: Удалить поле вместе с его анализами (только владелец)
+      tags: [RoleRequests]
+      summary: Отозвать свою заявку
+      description: Только для заявки в статусе `Pending`. Заявка получает статус `Cancelled`.
       responses:
         '204':
-          description: Удалено
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/NotFound'
-
-  /fields/{fieldId}/analyses:
-    parameters:
-      - $ref: '#/components/parameters/FieldId'
-    post:
-      tags: [Analyses]
-      summary: Запустить анализ поля (только владелец)
-      description: |
-        Создаёт запись со статусом `Pending` и ставит задачу в очередь Redis.
-        Ответ приходит сразу, результат нужно получать через `GET /analyses/{analysisId}`.
-        Если передан заголовок `Idempotency-Key`, повторный запрос с тем же ключом вернёт уже созданный анализ.
-      parameters:
-        - $ref: '#/components/parameters/IdempotencyKey'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/AnalysisCreate'
-      responses:
-        '202':
-          $ref: '#/components/responses/AnalysisAccepted'
-        '400':
-          $ref: '#/components/responses/ValidationError'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '429':
-          $ref: '#/components/responses/TooManyAnalyses'
-    get:
-      tags: [Analyses]
-      summary: История анализов поля
-      parameters:
-        - $ref: '#/components/parameters/Page'
-        - $ref: '#/components/parameters/PageSize'
-        - name: status
-          in: query
-          schema:
-            $ref: '#/components/schemas/AnalysisStatus'
-      responses:
-        '200':
-          description: Страница анализов (по убыванию даты создания)
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AnalysisPage'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '404':
-          $ref: '#/components/responses/NotFound'
-
-  /pastures:
-    get:
-      tags: [Pastures]
-      summary: Список пастбищ территории
-      description: |
-        Возвращает пастбища территории текущего пользователя (и для `Farmer`, и для `Official`).
-        В каждом пастбище есть краткий итог последнего завершённого анализа.
-      parameters:
-        - $ref: '#/components/parameters/Page'
-        - $ref: '#/components/parameters/PageSize'
-        - name: droughtLevel
-          in: query
-          description: Фильтр по уровню засухи последнего анализа
-          schema:
-            $ref: '#/components/schemas/DroughtLevel'
-      responses:
-        '200':
-          description: Страница пастбищ
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/PasturePage'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-    post:
-      tags: [Pastures]
-      summary: Создать пастбище (только Official)
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ObjectCreate'
-      responses:
-        '201':
-          description: Пастбище создано
-          headers:
-            Location:
-              schema: { type: string }
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Pasture'
-        '400':
-          $ref: '#/components/responses/ValidationError'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-
-  /pastures/{pastureId}:
-    parameters:
-      - $ref: '#/components/parameters/PastureId'
-    get:
-      tags: [Pastures]
-      summary: Получить пастбище
-      responses:
-        '200':
-          description: Пастбище
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Pasture'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '404':
-          $ref: '#/components/responses/NotFound'
-    put:
-      tags: [Pastures]
-      summary: Обновить пастбище (только Official своей территории)
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ObjectCreate'
-      responses:
-        '200':
-          description: Обновлённое пастбище
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Pasture'
-        '400':
-          $ref: '#/components/responses/ValidationError'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/NotFound'
-    delete:
-      tags: [Pastures]
-      summary: Удалить пастбище вместе с анализами (только Official своей территории)
-      responses:
-        '204':
-          description: Удалено
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/NotFound'
-
-  /pastures/{pastureId}/analyses:
-    parameters:
-      - $ref: '#/components/parameters/PastureId'
-    post:
-      tags: [Analyses]
-      summary: Запустить анализ пастбища (только Official)
-      description: Работает так же, как анализ поля, результат используется в дашборде территории.
-      parameters:
-        - $ref: '#/components/parameters/IdempotencyKey'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/AnalysisCreate'
-      responses:
-        '202':
-          $ref: '#/components/responses/AnalysisAccepted'
-        '400':
-          $ref: '#/components/responses/ValidationError'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '429':
-          $ref: '#/components/responses/TooManyAnalyses'
-    get:
-      tags: [Analyses]
-      summary: История анализов пастбища
-      parameters:
-        - $ref: '#/components/parameters/Page'
-        - $ref: '#/components/parameters/PageSize'
-        - name: status
-          in: query
-          schema:
-            $ref: '#/components/schemas/AnalysisStatus'
-      responses:
-        '200':
-          description: Страница анализов (по убыванию даты создания)
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AnalysisPage'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '404':
-          $ref: '#/components/responses/NotFound'
-
-  /analyses/{analysisId}:
-    parameters:
-      - $ref: '#/components/parameters/AnalysisId'
-    get:
-      tags: [Analyses]
-      summary: Статус и результат анализа
-      description: |
-        Поле `result` заполнено только при статусе `Done`, поле `error` только при `Failed`.
-        Доступно владельцу объекта и сотрудникам айыл окмоту той же территории.
-      responses:
-        '200':
-          description: Анализ
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Analysis'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '404':
-          $ref: '#/components/responses/NotFound'
-    delete:
-      tags: [Analyses]
-      summary: Удалить анализ (только тот, кто его запускал)
-      responses:
-        '204':
-          description: Удалено
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/NotFound'
-
-  /analyses/{analysisId}/reports:
-    parameters:
-      - $ref: '#/components/parameters/AnalysisId'
-    post:
-      tags: [Reports]
-      summary: Сформировать отчёт по завершённому анализу
-      description: Допустимо только для анализа в статусе `Done`. Файл формируется воркером и кладётся в MinIO.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [format]
-              properties:
-                format:
-                  $ref: '#/components/schemas/ReportFormat'
-      responses:
-        '202':
-          description: Формирование отчёта запущено
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Report'
+          description: Заявка отозвана
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          description: Анализ ещё не завершён
+          description: Заявка уже рассмотрена
           content:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
 
-  /reports/{reportId}:
-    parameters:
-      - name: reportId
-        in: path
-        required: true
-        schema: { type: string, format: uuid }
+  /admin/role-requests:
     get:
-      tags: [Reports]
-      summary: Статус отчёта и ссылка на скачивание
-      description: При статусе `Done` в `downloadUrl` лежит presigned-ссылка MinIO (действует 10 минут).
+      tags: [Admin]
+      summary: Список заявок (только Admin)
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: status
+          in: query
+          description: Фильтр по статусу. По умолчанию возвращаются все
+          schema:
+            $ref: '#/components/schemas/RoleRequestStatus'
       responses:
         '200':
-          description: Отчёт
+          description: Страница заявок (по убыванию даты создания)
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Report'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '404':
-          $ref: '#/components/responses/NotFound'
-
-  /dashboard/territory:
-    get:
-      tags: [Dashboard]
-      summary: Дашборд территории (только Official)
-      description: |
-        Сводка по территории сотрудника: сколько фермеров, полей и пастбищ, как распределяются пастбища
-        по уровню засухи (по последнему завершённому анализу) и какие пастбища в зоне риска.
-        Агрегаты кэшируются в Redis на 60 секунд.
-      responses:
-        '200':
-          description: Сводка
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/TerritoryDashboard'
+                $ref: '#/components/schemas/RoleRequestPage'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+
+  /admin/role-requests/{requestId}/approve:
+    parameters:
+      - $ref: '#/components/parameters/RequestId'
+    post:
+      tags: [Admin]
+      summary: Одобрить заявку (только Admin)
+      description: |
+        В одной транзакции: статус заявки -> `Approved`, в `role_users` добавляется запрошенная роль.
+        Пользователю нужно заново войти, чтобы новая роль попала в токен.
+      responses:
+        '200':
+          description: Заявка одобрена
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoleRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Заявка уже рассмотрена
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  /admin/role-requests/{requestId}/reject:
+    parameters:
+      - $ref: '#/components/parameters/RequestId'
+    post:
+      tags: [Admin]
+      summary: Отклонить заявку (только Admin)
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  maxLength: 500
+                  description: Причина отказа, пользователь увидит её в своей заявке
+                  example: Не удалось подтвердить должность
+      responses:
+        '200':
+          description: Заявка отклонена
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoleRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Заявка уже рассмотрена
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
 
 components:
   securitySchemes:
@@ -593,21 +310,11 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
-      description: JWT содержит `sub` (id пользователя), `role` (`Farmer` или `Official`) и `territoryId`.
+      description: JWT содержит `sub` (id пользователя) и `roles` (массив ролей, например `["Farmer", "Official"]`).
 
   parameters:
-    FieldId:
-      name: fieldId
-      in: path
-      required: true
-      schema: { type: string, format: uuid }
-    PastureId:
-      name: pastureId
-      in: path
-      required: true
-      schema: { type: string, format: uuid }
-    AnalysisId:
-      name: analysisId
+    RequestId:
+      name: requestId
       in: path
       required: true
       schema: { type: string, format: uuid }
@@ -619,11 +326,6 @@ components:
       name: pageSize
       in: query
       schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
-    IdempotencyKey:
-      name: Idempotency-Key
-      in: header
-      required: false
-      schema: { type: string, maxLength: 64 }
 
   responses:
     Unauthorized:
@@ -633,7 +335,7 @@ components:
           schema:
             $ref: '#/components/schemas/Problem'
     Forbidden:
-      description: Роль или права пользователя не позволяют выполнить действие
+      description: Роль пользователя не позволяет выполнить действие
       content:
         application/problem+json:
           schema:
@@ -650,22 +352,6 @@ components:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/ValidationProblem'
-    TooManyAnalyses:
-      description: Слишком много активных анализов у пользователя
-      content:
-        application/problem+json:
-          schema:
-            $ref: '#/components/schemas/Problem'
-    AnalysisAccepted:
-      description: Задача принята
-      headers:
-        Location:
-          schema: { type: string }
-          description: URL для опроса статуса
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/Analysis'
 
   schemas:
     Problem:
@@ -688,27 +374,19 @@ components:
                 type: array
                 items: { type: string }
               example:
-                geometry: ['Полигон должен быть замкнутым']
+                email: ['Некорректный email']
 
     Role:
       type: string
-      enum: [Farmer, Official]
-
-    Territory:
-      type: object
-      required: [id, name]
-      properties:
-        id: { type: string, format: uuid }
-        name: { type: string, example: Ак-Суу айыл аймагы }
+      enum: [Farmer, Official, Admin]
 
     RegisterRequest:
       type: object
-      required: [email, password, name, territoryId]
+      required: [email, password, name]
       properties:
         email: { type: string, format: email }
         password: { type: string, minLength: 8, maxLength: 128, format: password }
         name: { type: string, minLength: 1, maxLength: 100 }
-        territoryId: { type: string, format: uuid }
 
     LoginRequest:
       type: object
@@ -728,277 +406,76 @@ components:
 
     User:
       type: object
-      required: [id, email, name, role, territoryId]
+      required: [id, email, name, roles]
       properties:
         id: { type: string, format: uuid }
         email: { type: string, format: email }
         name: { type: string }
-        role:
-          $ref: '#/components/schemas/Role'
-        territoryId: { type: string, format: uuid }
+        roles:
+          type: array
+          description: Все роли пользователя из `role_users`
+          items:
+            $ref: '#/components/schemas/Role'
+          example: [Farmer]
         createdAt: { type: string, format: date-time }
 
-    Polygon:
-      type: object
-      description: GeoJSON Polygon (WGS84, порядок координат [долгота, широта]). Первое и последнее кольцо замкнуты.
-      required: [type, coordinates]
-      properties:
-        type: { type: string, enum: [Polygon] }
-        coordinates:
-          type: array
-          items:
-            type: array
-            minItems: 4
-            items:
-              type: array
-              minItems: 2
-              maxItems: 2
-              items: { type: number }
-      example:
-        type: Polygon
-        coordinates:
-          - [[74.60, 42.87], [74.61, 42.87], [74.61, 42.88], [74.60, 42.88], [74.60, 42.87]]
+    RoleRequestStatus:
+      type: string
+      enum: [Pending, Approved, Rejected, Cancelled]
 
-    Point:
+    RoleRequestCreate:
       type: object
-      required: [lat, lon]
+      required: [organization]
       properties:
-        lat: { type: number, format: double }
-        lon: { type: number, format: double }
-
-    ObjectCreate:
-      type: object
-      description: Тело создания и обновления для поля и пастбища.
-      required: [name, geometry]
-      properties:
-        name: { type: string, minLength: 1, maxLength: 100, example: Северный участок }
-        description:
+        requestedRole:
           type: string
+          enum: [Official]
+          default: Official
+          description: Сейчас можно запросить только `Official`
+        organization:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: Название айыл окмоту, где работает пользователь
+          example: Ак-Суу айыл окмоту
+        comment:
+          type: string
+          maxLength: 1000
           nullable: true
-          description: Культура (для поля) или тип пастбища (для пастбища)
-          example: пшеница
-        geometry:
-          $ref: '#/components/schemas/Polygon'
+          description: Должность, контакты для проверки и т.п.
+          example: Специалист по земельным ресурсам, тел. +996 555 000 000
 
-    Field:
+    RoleRequest:
       type: object
-      required: [id, ownerId, territoryId, name, geometry, centroid, areaHa, createdAt]
+      required: [id, userId, requestedRole, status, organization, createdAt]
       properties:
         id: { type: string, format: uuid }
-        ownerId: { type: string, format: uuid }
-        ownerName: { type: string }
-        territoryId: { type: string, format: uuid }
-        name: { type: string }
-        description: { type: string, nullable: true }
-        geometry:
-          $ref: '#/components/schemas/Polygon'
-        centroid:
-          $ref: '#/components/schemas/Point'
-        areaHa: { type: number, format: double, description: Площадь в гектарах }
-        createdAt: { type: string, format: date-time }
-        updatedAt: { type: string, format: date-time }
-
-    FieldPage:
-      type: object
-      required: [items, page, pageSize, total]
-      properties:
-        items:
-          type: array
-          items:
-            $ref: '#/components/schemas/Field'
-        page: { type: integer }
-        pageSize: { type: integer }
-        total: { type: integer }
-
-    LastAnalysisSummary:
-      type: object
-      nullable: true
-      description: Краткий итог последнего завершённого анализа. `null`, если анализа ещё не было.
-      required: [analysisId, finishedAt, droughtIndex, droughtLevel]
-      properties:
-        analysisId: { type: string, format: uuid }
-        finishedAt: { type: string, format: date-time }
-        droughtIndex: { type: number, example: 0.42 }
-        droughtLevel:
-          $ref: '#/components/schemas/DroughtLevel'
-
-    Pasture:
-      type: object
-      required: [id, territoryId, name, geometry, centroid, areaHa, createdAt]
-      properties:
-        id: { type: string, format: uuid }
-        territoryId: { type: string, format: uuid }
-        name: { type: string, example: Жайлоо Кара-Суу }
-        description: { type: string, nullable: true }
-        geometry:
-          $ref: '#/components/schemas/Polygon'
-        centroid:
-          $ref: '#/components/schemas/Point'
-        areaHa: { type: number, format: double }
-        lastAnalysis:
-          $ref: '#/components/schemas/LastAnalysisSummary'
-        createdAt: { type: string, format: date-time }
-        updatedAt: { type: string, format: date-time }
-
-    PasturePage:
-      type: object
-      required: [items, page, pageSize, total]
-      properties:
-        items:
-          type: array
-          items:
-            $ref: '#/components/schemas/Pasture'
-        page: { type: integer }
-        pageSize: { type: integer }
-        total: { type: integer }
-
-    DroughtLevel:
-      type: string
-      enum: [None, Moderate, Severe]
-
-    AnalysisStatus:
-      type: string
-      enum: [Pending, Running, Done, Failed]
-
-    TargetType:
-      type: string
-      enum: [Field, Pasture]
-
-    AnalysisCreate:
-      type: object
-      required: [periodStart, periodEnd]
-      properties:
-        periodStart: { type: string, format: date, example: '2026-04-01' }
-        periodEnd:
-          type: string
-          format: date
-          example: '2026-09-30'
-          description: Не раньше `periodStart`, период не длиннее 366 дней
-        gddBaseTemp:
-          type: number
-          default: 10
-          description: Базовая температура для суммы активных температур (GDD), °C
-
-    DailyWeather:
-      type: object
-      required: [date, tMax, tMin, precipitationMm]
-      properties:
-        date: { type: string, format: date }
-        tMax: { type: number, description: °C }
-        tMin: { type: number, description: °C }
-        precipitationMm: { type: number }
-        gdd: { type: number, description: Активные температуры за день }
-
-    AnalysisResult:
-      type: object
-      required: [totalPrecipitationMm, gddSum, droughtIndex, droughtLevel, daily]
-      properties:
-        totalPrecipitationMm: { type: number, example: 312.4 }
-        gddSum: { type: number, example: 1840.5 }
-        droughtIndex:
-          type: number
-          description: |
-            Индекс засухи, 0..1 (чем больше, тем суше). Формула описывается в README
-            (например, доля дней без осадков и дефицит осадков относительно нормы).
-          example: 0.42
-        droughtLevel:
-          $ref: '#/components/schemas/DroughtLevel'
-        daily:
-          type: array
-          items:
-            $ref: '#/components/schemas/DailyWeather'
-
-    Analysis:
-      type: object
-      required: [id, targetType, targetId, status, periodStart, periodEnd, createdAt]
-      properties:
-        id: { type: string, format: uuid }
-        targetType:
-          $ref: '#/components/schemas/TargetType'
-        targetId:
+        userId: { type: string, format: uuid }
+        userName: { type: string }
+        userEmail: { type: string, format: email }
+        requestedRole:
+          $ref: '#/components/schemas/Role'
+        status:
+          $ref: '#/components/schemas/RoleRequestStatus'
+        organization: { type: string }
+        comment: { type: string, nullable: true }
+        rejectReason: { type: string, nullable: true }
+        reviewedBy:
           type: string
           format: uuid
-          description: Идентификатор поля или пастбища (зависит от `targetType`)
-        status:
-          $ref: '#/components/schemas/AnalysisStatus'
-        periodStart: { type: string, format: date }
-        periodEnd: { type: string, format: date }
-        gddBaseTemp: { type: number }
+          nullable: true
+          description: Id администратора, рассмотревшего заявку
         createdAt: { type: string, format: date-time }
-        startedAt: { type: string, format: date-time, nullable: true }
-        finishedAt: { type: string, format: date-time, nullable: true }
-        result:
-          allOf:
-            - $ref: '#/components/schemas/AnalysisResult'
-          nullable: true
-        error:
-          type: string
-          nullable: true
-          description: Причина ошибки при статусе `Failed`
+        reviewedAt: { type: string, format: date-time, nullable: true }
 
-    AnalysisPage:
+    RoleRequestPage:
       type: object
       required: [items, page, pageSize, total]
       properties:
         items:
           type: array
           items:
-            $ref: '#/components/schemas/Analysis'
+            $ref: '#/components/schemas/RoleRequest'
         page: { type: integer }
         pageSize: { type: integer }
         total: { type: integer }
-
-    ReportFormat:
-      type: string
-      enum: [csv, pdf]
-
-    Report:
-      type: object
-      required: [id, analysisId, format, status, createdAt]
-      properties:
-        id: { type: string, format: uuid }
-        analysisId: { type: string, format: uuid }
-        format:
-          $ref: '#/components/schemas/ReportFormat'
-        status:
-          $ref: '#/components/schemas/AnalysisStatus'
-        downloadUrl:
-          type: string
-          format: uri
-          nullable: true
-        createdAt: { type: string, format: date-time }
-
-    TerritoryDashboard:
-      type: object
-      required: [territory, generatedAt, farmersCount, fields, pastures, pastureCondition, topRiskPastures]
-      properties:
-        territory:
-          $ref: '#/components/schemas/Territory'
-        generatedAt: { type: string, format: date-time }
-        farmersCount: { type: integer, example: 37 }
-        fields:
-          $ref: '#/components/schemas/ObjectsSummary'
-        pastures:
-          $ref: '#/components/schemas/ObjectsSummary'
-        pastureCondition:
-          type: object
-          description: Сколько пастбищ в каждом состоянии по последнему анализу
-          required: [none, moderate, severe, notAnalyzed]
-          properties:
-            none: { type: integer, example: 12 }
-            moderate: { type: integer, example: 5 }
-            severe: { type: integer, example: 2 }
-            notAnalyzed: { type: integer, example: 3 }
-        topRiskPastures:
-          type: array
-          maxItems: 10
-          description: Пастбища с наибольшим индексом засухи (по убыванию)
-          items:
-            $ref: '#/components/schemas/Pasture'
-
-    ObjectsSummary:
-      type: object
-      required: [count, totalAreaHa]
-      properties:
-        count: { type: integer }
-        totalAreaHa: { type: number, format: double }
