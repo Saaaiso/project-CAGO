@@ -63,4 +63,13 @@ _Будет заполнено._
 
 ## Сборка и запуск
 
-_Будет заполнено: запуск через `docker compose up`._
+Привет команде! В репозитории уже подготовлены миграции БД, API-контракт и Docker Compose для PostgreSQL/PostGIS, Redis и MinIO. Приложения Backend, Frontend и Worker пока ещё не добавлены — в их папках есть короткие инструкции для участников:
+
+```powershell
+Copy-Item .env.example .env
+# Открой .env и замени все пароли change-me-* на свои уникальные
+docker compose up -d --build
+docker compose ps
+```
+
+Перед запуском не отправляй `.env` другим и не добавляй его в Git. Инструкции: [Backend](backend/README.md), [Frontend](frontend/README.md), [Worker](workers/README.md). Права PostgreSQL и описание подключения: [`db/usage.md`](db/usage.md).
