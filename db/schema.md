@@ -44,8 +44,9 @@
 | `014_track_import_creators.sql` | Автор фоновой задачи и пакета импорта |
 | `015_database_integrity_defaults.sql` | UUID defaults, уникальность для неудалённых записей, CHECK `rule_code`, триггеры площади и `updated_at`, переименование сезона пастбища |
 | `016_application_roles_and_grants.sql` | Групповые роли Backend, Worker и чтения отчётов; минимальные GRANT-ы |
+| `017_application_sequence_grants.sql` | Доступ Backend к identity-последовательностям outbox и журнала аудита |
 
-После миграции 016 схема содержит 29 таблиц: `alert_rule` отложена до второй итерации; коды правил для записей `monitoring.alert` ограничены значениями `ndvi_drop`, `overgrazing`, `abandoned`. `db/seeds/dev_data.sql` включает запись в `ref`, поэтому выполняется отдельной привилегированной dev/bootstrap-учётной записью, не `app_rw`.
+После миграции 017 схема содержит 29 таблиц: `alert_rule` отложена до второй итерации; коды правил для записей `monitoring.alert` ограничены значениями `ndvi_drop`, `overgrazing`, `abandoned`. `db/seeds/dev_data.sql` включает запись в `ref`, поэтому выполняется отдельной привилегированной dev/bootstrap-учётной записью, не `app_rw`.
 
 ## Схемы и таблицы
 

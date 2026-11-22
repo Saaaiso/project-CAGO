@@ -1,0 +1,113 @@
+services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB in .env}
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      APP_DB_USER: ${APP_DB_USER:-back_aidar}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?Set APP_DB_PASSWORD in .env}
+      WORKER_DB_USER: ${WORKER_DB_USER:-worker_max}
+      WORKER_DB_PASSWORD: ${WORKER_DB_PASSWORD:?Set WORKER_DB_PASSWORD in .env}
+      REPORT_DB_USER: ${REPORT_DB_USER:-report_reader}
+      REPORT_DB_PASSWORD: ${REPORT_DB_PASSWORD:?Set REPORT_DB_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/migrations:/docker-entrypoint-initdb.d:ro
+      - ./db/docker/create_application_logins.sh:/docker-entrypoint-initdb.d/020_create_application_logins.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    environment:
+      REDIS_ADMIN_PASSWORD: ${REDIS_ADMIN_PASSWORD:?Set REDIS_ADMIN_PASSWORD in .env}
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --requirepass
+      - ${REDIS_ADMIN_PASSWORD:?Set REDIS_ADMIN_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --user redis-admin -a \"$${REDIS_ADMIN_PASSWORD}\" ping 2>/dev/null | grep -q PONG || redis-cli -a \"$${REDIS_ADMIN_PASSWORD}\" ping 2>/dev/null | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis-init:
+    image: redis:7-alpine
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      REDIS_ADMIN_PASSWORD: ${REDIS_ADMIN_PASSWORD:?Set REDIS_ADMIN_PASSWORD in .env}
+      REDIS_BACKEND_PASSWORD: ${REDIS_BACKEND_PASSWORD:?Set REDIS_BACKEND_PASSWORD in .env}
+      REDIS_WORKER_PASSWORD: ${REDIS_WORKER_PASSWORD:?Set REDIS_WORKER_PASSWORD in .env}
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        redis-cli -h redis -a "$$REDIS_ADMIN_PASSWORD" ACL SETUSER redis-admin on ">$${REDIS_ADMIN_PASSWORD}" "~*" +@all
+        redis-cli -h redis --user redis-admin -a "$$REDIS_ADMIN_PASSWORD" ACL SETUSER cago-backend on ">$${REDIS_BACKEND_PASSWORD}" "~cago:*" +@all
+        redis-cli -h redis --user redis-admin -a "$$REDIS_ADMIN_PASSWORD" ACL SETUSER cago-worker on ">$${REDIS_WORKER_PASSWORD}" "~cago:*" +@all
+        redis-cli -h redis --user redis-admin -a "$$REDIS_ADMIN_PASSWORD" ACL SETUSER default off resetpass
+    restart: "no"
+
+  minio:
+    image: bitnamilegacy/minio:latest
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER in .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    volumes:
+      - minio_data:/bitnami/minio/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9000/minio/health/live || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  minio-init:
+    image: cago-minio-init:latest
+    build:
+      context: ./db/docker/minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER in .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in .env}
+      MINIO_BACKEND_USER: ${MINIO_BACKEND_USER:-cago-backend}
+      MINIO_BACKEND_PASSWORD: ${MINIO_BACKEND_PASSWORD:?Set MINIO_BACKEND_PASSWORD in .env}
+      MINIO_WORKER_USER: ${MINIO_WORKER_USER:-cago-worker}
+      MINIO_WORKER_PASSWORD: ${MINIO_WORKER_PASSWORD:?Set MINIO_WORKER_PASSWORD in .env}
+    entrypoint: /bin/sh
+    command:
+      - -ec
+      - |
+        mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
+        mc mb --ignore-existing local/cago-docs
+        mc admin user add local "$$MINIO_BACKEND_USER" "$$MINIO_BACKEND_PASSWORD"
+        mc admin policy attach local readwrite --user "$$MINIO_BACKEND_USER"
+        mc admin user add local "$$MINIO_WORKER_USER" "$$MINIO_WORKER_PASSWORD"
+        mc admin policy attach local readwrite --user "$$MINIO_WORKER_USER"
+    restart: "no"
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
