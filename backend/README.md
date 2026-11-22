@@ -6,6 +6,8 @@
 
 В репозитории есть схема PostgreSQL и миграции, API-контракт в `docs/openapi.yaml` и Docker Compose для PostgreSQL/PostGIS, Redis и MinIO. Самого Backend-приложения пока нет: папка `backend` ещё пустая.
 
+Договор с Worker по заданиям, Redis и файлам в MinIO: [`../docs/backend-worker-contract.md`](../docs/backend-worker-contract.md).
+
 ## Как начать
 
 Склонируй репозиторий. В PowerShell из его корневой папки выполни:
@@ -26,6 +28,8 @@ PostgreSQL, Redis и MinIO должны быть в состоянии `healthy`
 ## Что использовать Backend
 
 Backend подключается к PostgreSQL с пользователем и паролем из `APP_DB_USER` и `APP_DB_PASSWORD` — этому пользователю выдана роль `app_rw`. Для Redis используй пользователя `cago-backend` и пароль `REDIS_BACKEND_PASSWORD`. Для MinIO — `MINIO_BACKEND_USER` и `MINIO_BACKEND_PASSWORD`.
+
+Для фонового задания Backend должен сохранить строку `platform.job` и событие `job.queued` в `platform.outbox` в одной транзакции. Формат события и порядок публикации описаны в договоре с Worker.
 
 Если запускаешь Backend прямо на компьютере, адреса сервисов: PostgreSQL `localhost:5432`, Redis `localhost:6379`, MinIO `http://localhost:9000`. Имя базы — значение `POSTGRES_DB`, bucket MinIO — `cago-docs`. Не используй административные пароли и учётные записи Worker.
 

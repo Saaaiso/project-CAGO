@@ -1,0 +1,3 @@
+GRANT USAGE, SELECT
+    ON ALL SEQUENCES IN SCHEMA platform, audit
+TO app_rw;

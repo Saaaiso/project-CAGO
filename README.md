@@ -72,4 +72,4 @@ docker compose up -d --build
 docker compose ps
 ```
 
-Перед запуском не отправляй `.env` другим и не добавляй его в Git. Инструкции: [Backend](backend/README.md), [Frontend](frontend/README.md), [Worker](workers/README.md). Права PostgreSQL и описание подключения: [`db/usage.md`](db/usage.md).
+Перед запуском не отправляй `.env` другим и не добавляй его в Git. Инструкции: [Backend](backend/README.md), [Frontend](frontend/README.md), [Worker](workers/README.md). Общий договор Backend и Worker по PostgreSQL, Redis и MinIO: [`docs/backend-worker-contract.md`](docs/backend-worker-contract.md). Права PostgreSQL и описание подключения: [`db/usage.md`](db/usage.md).

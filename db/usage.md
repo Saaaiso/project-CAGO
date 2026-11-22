@@ -2,6 +2,8 @@
 
 Короткая инструкция для разработчиков Backend и Worker. Полное описание таблиц и ограничений — в [`schema.md`](./schema.md). Миграции и SQL — в [`migrations/`](./migrations/).
 
+Общий протокол фоновых заданий, Redis Stream и файлов MinIO между Backend и Worker описан в [`../docs/backend-worker-contract.md`](../docs/backend-worker-contract.md).
+
 ## Сначала: две разные системы ролей
 
 У Backend и Worker есть роли PostgreSQL, которые определяют, что сервису разрешено делать в базе:
