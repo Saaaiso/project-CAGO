@@ -1,0 +1,42 @@
+:root {
+  /* Surface */
+  --bg: #f1f4ec;
+  --card: #fbfcf8;
+  --line: #e0e6d8;
+  --banner: #e3eddc;
+
+  /* Text */
+  --ink: #1b2a20;
+  --muted: #667a6b;
+
+  /* Brand */
+  --green-900: #1d4632;
+  --green-700: #2a6a48;
+  --green-600: #2f7d52;
+  --green-100: #e2efe5;
+
+  /* Status */
+  --amber-bg: #fbf1d8;
+  --amber-ink: #a5620a;
+  --red-ink: #b5402a;
+  --ok-bg: #e3f1e6;
+  --ok-ink: #2a7a45;
+
+  /* Map */
+  --map-bg: #e9eee0;
+  --field: #a9c18f;
+  --field-low: #dcb36b;
+  --water: #a9c9d6;
+
+  /* Shape */
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 16px;
+  --gap: 14px;
+
+  --font: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+
+  --sidebar-w: 220px;
+  --rail-w: 56px;
+  --bottom-nav-h: 60px;
+}
