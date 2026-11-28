@@ -94,7 +94,7 @@ docker compose up -d --build
 docker compose ps
 ```
 
-Сервисы должны быть готовы (`healthy`, если для сервиса настроен healthcheck). В локальном запуске адреса: PostgreSQL `localhost:5432`, Redis `localhost:6379`, MinIO `http://localhost:9000`. Если Backend или Worker запущен контейнером в сети Compose, используйте имена `postgres`, `redis` и `minio`.
+Сервисы должны быть готовы (`healthy`, если для сервиса настроен healthcheck). В локальном запуске адреса: PostgreSQL `localhost:5433` (или порт из `POSTGRES_PORT`), Redis `localhost:6379`, MinIO `http://localhost:9000`. Внутри Docker-сети PostgreSQL доступен как `postgres:5432`; используйте имена сервисов `postgres`, `redis` и `minio`.
 
 Перед интеграцией проверьте сквозной сценарий: Backend создаёт `platform.job` и outbox в одной транзакции; publisher отправляет событие в `cago:jobs`; Worker получает его, читает параметры из PostgreSQL и входной объект из MinIO; Worker сохраняет конечный статус и результат в PostgreSQL, затем подтверждает Redis-сообщение. Повторно доставленное сообщение не должно повторно создавать побочные эффекты.
 

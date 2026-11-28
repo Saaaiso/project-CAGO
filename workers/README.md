@@ -29,7 +29,7 @@ PostgreSQL, Redis и MinIO должны быть в состоянии `healthy`
 
 Worker подключается к PostgreSQL с пользователем и паролем из `WORKER_DB_USER` и `WORKER_DB_PASSWORD` — этому пользователю выдана роль `worker_rw`. Для Redis используй пользователя `cago-worker` и пароль `REDIS_WORKER_PASSWORD`. Для MinIO — `MINIO_WORKER_USER` и `MINIO_WORKER_PASSWORD`.
 
-Если Worker запущен прямо на компьютере, адреса: PostgreSQL `localhost:5432`, Redis `localhost:6379`, MinIO `http://localhost:9000`. Имя базы — `POSTGRES_DB`, bucket MinIO — `cago-docs`. Не используй учётные данные Backend или административные пароли. Права Worker на PostgreSQL описаны в `db/usage.md`.
+Если Worker запущен прямо на компьютере, адреса: PostgreSQL `localhost:5433` (или порт из `POSTGRES_PORT`), Redis `localhost:6379`, MinIO `http://localhost:9000`. Внутри Docker-сети PostgreSQL доступен по `postgres:5432`. Имя базы — `POSTGRES_DB`, bucket MinIO — `cago-docs`. Не используй учётные данные Backend или административные пароли. Права Worker на PostgreSQL описаны в `db/usage.md`.
 
 Worker читает `platform.job.params`, обрабатывает сообщение из Redis Stream `cago:jobs`, сохраняет статус и результат в PostgreSQL, а затем подтверждает сообщение в Redis. Формат сообщения, статусы и правила для файлов описаны в договоре выше.
 

@@ -31,7 +31,7 @@ Backend подключается к PostgreSQL с пользователем и 
 
 Для фонового задания Backend должен сохранить строку `platform.job` и событие `job.queued` в `platform.outbox` в одной транзакции. Формат события и порядок публикации описаны в договоре с Worker.
 
-Если запускаешь Backend прямо на компьютере, адреса сервисов: PostgreSQL `localhost:5432`, Redis `localhost:6379`, MinIO `http://localhost:9000`. Имя базы — значение `POSTGRES_DB`, bucket MinIO — `cago-docs`. Не используй административные пароли и учётные записи Worker.
+Если запускаешь Backend прямо на компьютере, адреса сервисов: PostgreSQL `localhost:5433` (или порт из `POSTGRES_PORT`), Redis `localhost:6379`, MinIO `http://localhost:9000`. Внутри Docker-сети PostgreSQL доступен по `postgres:5432`. Имя базы — значение `POSTGRES_DB`, bucket MinIO — `cago-docs`. Не используй административные пароли и учётные записи Worker.
 
 ## Проверка
 
