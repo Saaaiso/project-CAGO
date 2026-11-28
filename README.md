@@ -63,7 +63,7 @@ _Будет заполнено._
 
 ## Сборка и запуск
 
-Привет команде! В репозитории уже подготовлены миграции БД, API-контракт и Docker Compose для PostgreSQL/PostGIS, Redis и MinIO. Приложения Backend, Frontend и Worker пока ещё не добавлены — в их папках есть короткие инструкции для участников:
+В репозитории уже подготовлены миграции БД, API-контракт и Docker Compose для PostgreSQL/PostGIS, Redis и MinIO. Приложения Backend, Frontend и Worker пока ещё не добавлены — в их папках есть короткие инструкции для участников:
 
 ```powershell
 Copy-Item .env.example .env
