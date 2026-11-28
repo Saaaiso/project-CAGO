@@ -61,7 +61,11 @@ _Будет заполнено._
 
 ## Сборка и запуск
 
+<<<<<<< HEAD
+В репозитории уже подготовлены миграции БД, API-контракт и Docker Compose для PostgreSQL/PostGIS, Redis и MinIO. Приложения Backend, Frontend и Worker пока ещё не добавлены — в их папках есть короткие инструкции для участников:
+=======
 Привет команде! В репозитории уже подготовлены миграции БД, API-контракт и Docker Compose для PostgreSQL/PostGIS, Redis и MinIO. Приложения Backend, Frontend и Worker пока ещё не добавлены — в их папках есть короткие инструкции для участников:
+>>>>>>> origin/main
 
 ```powershell
 Copy-Item .env.example .env
@@ -70,4 +74,8 @@ docker compose up -d --build
 docker compose ps
 ```
 
+<<<<<<< HEAD
 Перед запуском не отправляй `.env` другим и не добавляй его в Git. Инструкции: [Backend](backend/README.md), [Frontend](frontend/README.md), [Worker](workers/README.md). Общий договор Backend и Worker по PostgreSQL, Redis и MinIO: [`docs/backend-worker-contract.md`](docs/backend-worker-contract.md). Права PostgreSQL и описание подключения: [`db/usage.md`](db/usage.md).
+=======
+Перед запуском не отправляй `.env` другим и не добавляй его в Git. Инструкции: [Backend](backend/README.md), [Frontend](frontend/README.md), [Worker](workers/README.md). Общий договор Backend и Worker по PostgreSQL, Redis и MinIO: [`docs/backend-worker-contract.md`](docs/backend-worker-contract.md). Права PostgreSQL и описание подключения: [`db/usage.md`](db/usage.md).
+>>>>>>> origin/main
